@@ -8,6 +8,8 @@ from nose.tools import assert_is_none, assert_equal, assert_raises
 from reprclust.cluster_methods import WardClusterMethod
 from reprclust.reproducibility import reproducibility, _run_fold
 
+from itertools import product
+
 # create two far blobs easy to cluster
 blob1 = 2*np.random.randn(10, 2) + 100
 blob2 = 2*np.random.randn(10, 2) - 100
@@ -17,8 +19,9 @@ data = np.vstack((blob1, blob2)).T
 # add some noise and transpose
 dss = [(data + np.random.randn(*data.shape)) for i in xrange(10)]
 # fake test, we should get a value of 1 for k=2
-idx_train = idx_test = range(10)
-fake_splitter = [(idx_train, idx_test)]
+#idx_train = idx_test = range(10)
+#fake_splitter = [(idx_train, idx_test)]
+fake_splitter = product([range(10)], repeat=2)
 ground_truth = np.hstack((np.zeros(10, dtype=int), np.ones(10, dtype=int)))
 
 dss = np.vstack(dss)

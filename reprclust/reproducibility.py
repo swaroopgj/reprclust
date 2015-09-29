@@ -151,10 +151,7 @@ def reproducibility(data, splitters, cluster_method, ks, ground_truth=None,
     if len(splitters) != len(spaces):
         raise ValueError('Got {0} splitters and {1} spaces'.format(len(splitters, len(spaces))))
 
-    if len(splitters) > 1:
-        splitter = product(*splitters)
-    else:
-        splitter = product(splitters)
+    splitter = product(*splitters)
 
     parallel = Parallel(n_jobs=n_jobs, verbose=verbose)
     fold = delayed(_run_fold)
