@@ -93,6 +93,17 @@ def _run_fold(data, train, test, cluster_method, ks, stack=False,
 def reproducibility(data, splitter, cluster_method, ks, ground_truth=None,
                     stack=False, cluster_metrics=(ARI(), AMI()),
                     n_jobs=1, verbose=51):
+    """
+    Parameters
+    ----------
+    data: Input dataset of which rows are clustered.
+    splitter: A generator that provides training and testing splits
+                over which to cross-validate.
+    cluster_method: Cluster method to be used. Refer to `cluster_methods`
+                for available options.
+    ks: A list of cluster sizes to be computed.
+    """
+
     if not isinstance(ks, (list, np.ndarray)):
         raise ValueError('ks must be a list or numpy array')
     parallel = Parallel(n_jobs=n_jobs, verbose=verbose)
