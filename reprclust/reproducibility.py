@@ -35,31 +35,58 @@ functional connectivity."
 Journal of Neurophysiology, 106(3), 1125–1165. doi:10.1152/jn.00338.2011
 """
 import copy
-
+from itertools import product
 from joblib import Parallel, delayed
+
+from mvpa2.datasets.base import Dataset
+from mvpa2.mappers.fx import mean_group_sample
 
 import numpy as np
 
 from reprclust.cluster_metrics import ARI, AMI
 
 # this must be outside to allow parallelization
-def _run_fold(data, train, test, cluster_method, ks, stack=False,
-              ground_truth=None, cluster_metrics=(ARI(), AMI())):
+def _run_fold(data, split, cluster_method, ks, fold_fx=None,
+              ground_truth=None, cluster_metrics=(ARI(), AMI()),
+              spaces='sa.subjects'):
     """Run reproducibility algorithm on one fold for all the ks"""
+    if not isinstance(data, Dataset):
+        raise TypeError('Input must be a PyMVPA Dataset')
+    spaces_split = map(lambda x: x.split('.'), spaces)
+    for attr, attr_space in spaces_split:
+        if attr_space not in getattr(data, attr).keys():
+            raise KeyError('{0} is not present in data.{1}: {2}'.format(attr_space, attr,
+                                                                     getattr(data, attr).keys()))
+
+    mask_sa_train = np.ones(data.nsamples, dtype=bool)
+    mask_sa_test = np.ones(data.nsamples, dtype=bool)
+    mask_fa_train = np.ones(data.nfeatures, dtype=bool)
+    mask_fa_test = np.ones(data.nfeatures, dtype=bool)
+    for (train, test), (attr, attr_space) in zip(split, spaces_split):
+        if attr == 'sa':
+            mask_sa_train &= np.in1d(data.sa[attr_space], train)
+            mask_sa_test &= np.in1d(data.sa[attr_space], test)
+        elif attr == 'fa':
+            mask_fa_train &= np.in1d(data.fa[attr_space], train)
+            mask_fa_test &= np.in1d(data.fa[attr_space], test)
+        else:
+            raise ValueError('We should not get here')
+
+    data_train = data[mask_sa_train, mask_fa_train]
+    data_test = data[mask_sa_test, mask_fa_test]
+
+    if fold_fx is None:
+        fold_fx = lambda x, y: (x.samples, y.samples)
+
+    # apply fold_fx and transpose because clustering methods cluster rows
+    # while we want to cluster columns (features)
+    samples_train, samples_test = fold_fx(data_train, data_test)
+    samples_train = samples_train.T
+    samples_test = samples_test.T
+
     # initialize methods
     cm_train = cluster_method
     cm_test = copy.deepcopy(cm_train)
-
-    # XXX: this should change depending on the type of data
-    data_train = [data[tr_idx] for tr_idx in train]
-    data_test = [data[te_idx] for te_idx in test]
-
-    if stack:
-        data_train = np.vstack(data_train)
-        data_test = np.vstack(data_train)
-    else:
-        data_train = np.mean(np.dstack(data_train), axis=-1)
-        data_test = np.mean(np.dstack(data_test), axis=-1)
 
     # allocate storing dictionary
     result_fold = {}
@@ -72,47 +99,68 @@ def _run_fold(data, train, test, cluster_method, ks, stack=False,
     for i_k, k in enumerate(ks):
         # Step 1. Clustering on training/test set and prediction
         # cluster on training set
-        cm_train.train(data_train, k, compute_full=True)
+        cm_train.train(samples_train, k, compute_full=True)
         # cluster on test set
-        cm_test.train(data_test, k, compute_full=True)
+        cm_test.train(samples_test, k, compute_full=True)
 
         # predict
-        predicted_label = cm_train.predict(data_test, k)
-        test_label = cm_test.predict(data_test, k)
+        predicted_label = cm_train.predict(samples_test, k)
+        test_label = cm_test.predict(samples_test, k)
 
         # Step 2. Compute scores and store them
         for metric in cluster_metrics:
             result_fold[str(metric)][1, i_k] = \
-                metric(predicted_label, test_label, data=data_test, k=k)
+                metric(predicted_label, test_label, data=samples_test, k=k)
             if ground_truth is not None:
                 result_fold[str(metric) + '_gt'][1, i_k] = \
-                    metric(predicted_label, ground_truth, data=data_test, k=k)
+                    metric(predicted_label, ground_truth, data=samples_test, k=k)
     return result_fold
 
 
-def reproducibility(data, splitter, cluster_method, ks, ground_truth=None,
-                    stack=False, cluster_metrics=(ARI(), AMI()),
+def reproducibility(data, splitters, cluster_method, ks, ground_truth=None,
+                    fold_fx=None, cluster_metrics=(ARI(), AMI()),
+                    spaces='sa.subjects',
                     n_jobs=1, verbose=51):
     """
-    Parameters
-    ----------
-    data: Input dataset of which rows are clustered.
-    splitter: A generator that provides training and testing splits
-                over which to cross-validate.
-    cluster_method: Cluster method to be used. Refer to `cluster_methods`
-                for available options.
-    ks: A list of cluster sizes to be computed.
-    """
+    Runs the reproducibility algorithm on the data.
 
+    Arguments
+    ---------
+    data : mvpa2 Dataset
+    splitters : generator or equivalent, or list of generators (must have same
+        length as space)
+    cluster_method : list of ClusterMethod from reprclust.cluster_methods
+    ks : list or np.ndarray
+    ground_truth : list or np.ndarray
+    fold_fx : callable applied to (data_train, data_test) that returns a
+        tuple of np.ndarray corresponding to the modified input
+    cluster_metrics : list of ClusterMetric from reprclust.cluster_metrics
+    spaces : str or list of str
+        In the format of 'attr.attr_space' (e.g., 'sa.subjects'), where to apply
+        the splitter(s). If a list, then they're considered in order.
+    n_jobs : int
+    verbose : int
+    """
     if not isinstance(ks, (list, np.ndarray)):
         raise ValueError('ks must be a list or numpy array')
+    if not isinstance(splitters, list):
+        splitters = [splitters]
+    if not isinstance(spaces, list):
+        spaces = [spaces]
+
+    if len(splitters) != len(spaces):
+        raise ValueError('Got {0} splitters and {1} spaces'.format(len(splitters, len(spaces))))
+
+    splitter = product(*splitters)
+
     parallel = Parallel(n_jobs=n_jobs, verbose=verbose)
     fold = delayed(_run_fold)
-    results = parallel(fold(data, train, test, cluster_method, ks,
+    results = parallel(fold(data, split, cluster_method, ks,
                             ground_truth=ground_truth,
-                            stack=stack,
-                            cluster_metrics=cluster_metrics)
-                       for train, test in splitter)
+                            fold_fx=fold_fx,
+                            cluster_metrics=cluster_metrics,
+                            spaces=spaces)
+                       for split in splitter)
 
     scores = {}
     # store everything together now
